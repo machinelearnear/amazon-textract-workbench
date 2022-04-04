@@ -2,13 +2,23 @@
 # Author: https://github.com/machinelearnear
 
 # import dependencies
+# -----------------------------------------------------------
 import pandas as pd
 import streamlit as st
 import boto3
 import io
 import json
+import re
+import os
+import sys
+import cv2
+import numpy as np 
+import tensorflow as tf
+
+from matplotlib import pyplot
 from pathlib import Path
 from PIL import Image
+from streamlit_image_comparison import image_comparison
 
 from textractgeofinder.ocrdb import AreaSelection
 from textractgeofinder.tgeofinder import KeyValue, TGeoFinder, AreaSelection, SelectionElement
@@ -17,6 +27,36 @@ from textractprettyprinter.t_pretty_print import Pretty_Print_Table_Format, Text
 from textractoverlayer.t_overlay import DocumentDimensions, get_bounding_boxes
 
 import trp.trp2 as t2
+
+# Source: https://github.com/Leedeng/SauvolaNet
+# -----------------------------------------------------------
+from os.path import exists as path_exists
+path_repo_sauvolanet = 'ext/SauvolaNet'
+if not path_exists(path_repo_sauvolanet):
+    os.system(f'git clone https://github.com/Leedeng/SauvolaNet.git {path_repo_sauvolanet}')
+sys.path.append(f'{path_repo_sauvolanet}/SauvolaDocBin')
+pd.set_option('display.float_format','{:.4f}'.format)
+from dataUtils import collect_binarization_by_dataset, DataGenerator
+from testUtils import prepare_inference, find_best_model
+from layerUtils import *
+from metrics import *
+
+# @st.cache
+def sauvolanet_load_model(model_root = f'{path_repo_sauvolanet}/pretrained_models/'):
+    for this in os.listdir(model_root) :
+        if this.endswith('.h5') :
+            model_filepath = os.path.join(model_root, this)
+            model = prepare_inference(model_filepath)
+            print(model_filepath)
+    print(model.summary())
+    return model
+
+def sauvolanet_read_decode_image(im):
+    rgb = np.array(im)
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    x = gray.astype('float32')[None, ..., None]/255.
+    pred = model.predict(x)
+    return Image.fromarray(pred[0,...,0] > 0)
 
 # helper funcs
 # -----------------------------------------------------------
@@ -94,7 +134,7 @@ def t_json_to_t_df(t_json):
     return pd.read_csv(io.StringIO(t_str), sep=",")
 
 @st.cache
-def convert_df(df):
+def convert_pandas(df):
     # IMPORTANT: Cache the conversion to prevent computation on every rerun
     return df.to_csv().encode('utf-8')
 
@@ -112,12 +152,38 @@ def cached_call_textract(input_image, textract, options):
         boto3_textract_client=textract, 
         features=options)
 
+@st.cache
+def return_anno_file(folder, image_fname):
+    files = list(sorted([x for x in Path(folder).rglob('*.json')]))
+    selected = [x for x in files if 
+                Path(image_fname).stem in str(x) and 'ipynb_checkpoints' not in str(x)]
+    return selected[0]
+
+def get_filename_from_cd(cd):
+    """
+    Get filename from content-disposition
+    """
+    if not cd:
+        return None
+    fname = re.findall('filename=(.+)', cd)
+    if len(fname) == 0:
+        return None
+    return fname[0]
+
 # streamlit app
 # -----------------------------------------------------------
-st.set_page_config(page_title='Textract Workbench', page_icon=":open_book:", layout="centered", initial_sidebar_state="auto", menu_items=None)
+st.set_page_config(
+    page_title='Textract Workbench', 
+    page_icon=":open_book:", 
+    layout="centered", 
+    initial_sidebar_state="auto", 
+    menu_items=None)
 
 def main():
+    # intro and sidebar
+    #######################
     st.title('Amazon Textract Workbench')
+    st.markdown('**Author:** Nico Metallo (metallo@amazon.com)')
     with st.sidebar:
         st.header('Introduction')
         st.markdown('''
@@ -154,6 +220,7 @@ def main():
         
 
     # read input image
+    #######################
     st.subheader('Read input image')
     options = st.selectbox('Please choose any of the following options',
         (
@@ -169,40 +236,91 @@ def main():
         selected_file = st.selectbox(
             'Select an image file from the list', image_files
         )
-        st.write(f'You have selected `{selected_file}`')
+        image_fname = selected_file
+        st.write(f'You have selected `{image_fname}`')
         input_image = Image.open(selected_file)
     elif options == 'Download image from URL':
         image_url = st.text_input('Image URL')
         try:
             r = requests.get(image_url)
+            image_fname = get_filename_from_cd(r.headers.get('content-disposition'))
             input_image = Image.open(io.BytesIO(r.content))
         except Exception:
             st.error('There was an error downloading the image. Please check the URL again.')
     elif options == 'Upload your own image':
         uploaded_file = st.file_uploader("Choose file to upload")
         if uploaded_file:
+            image_fname = uploaded_file.name
             input_image = Image.open(io.BytesIO(uploaded_file.decode()))
             st.success('Image was successfully uploaded')
 
     if input_image:
-        with st.expander("See uploaded image"):
+        max_im_size = (1000,1000)
+        input_image.thumbnail(max_im_size, Image.ANTIALIAS)
+        with st.expander("See input image"):
             st.image(input_image, use_column_width=True)
-            st.info('Note: Larger images will take longer to process.')
+            st.info(f'Note: Image has been resized to fit within `{max_im_size}`')
+    else:
+        st.warning('There is no image loaded.')
+        
+    # image pre-processing
+    #######################
+    st.subheader('Image pre-processing')
+    options_preproc = st.selectbox('Please choose any of the following options',
+        (
+            'No pre-processing',
+            'SauvolaNet: Learning Adaptive Sauvola Network for Degraded Document Binarization (ICDAR2021)',
+            'Upload your own image',
+        )
+    )
+    
+    modified_image = None
+    if input_image:
+        if options_preproc == 'SauvolaNet: Learning Adaptive Sauvola Network for Degraded Document Binarization (ICDAR2021)':
+            try:
+                with st.spinner():
+                    sauvolanet_model = sauvolanet_load_model()
+                    st.error('good1')
+                    modified_image = sauvolanet_read_decode_image(input_image)
+                    # output = infer(model, np.asarray(input_image))
+                    # output_image = Image.fromarray((output * 255).astype(np.uint8))
+                    st.success('Image was pre-processed')
+            except Exception as e:
+                st.error(e)
+        else:
+            st.write(options_preproc)
+            st.error('what did you write')
+                
+        if modified_image:
+            with st.expander("See modified image"):
+                image_comparison(
+                    img1=input_image, img2=modified_image,
+                    label1='Original', label2='Modified',
+                )
     else:
         st.warning('There is no image loaded.')
     
-    # Define your K/V pairs
-    st.subheader("Select key-value pairs as custom tags (optional)")
-    number = st.number_input('Select the number of tags to use', min_value=0, value=0)
-    save_locally = st.checkbox('Save tags locally as json file', value=True)
+    # 2. Define your K/V pairs
+    st.subheader("Select custom tags from key-value pairs (optional)")
+    
+    ## check if there's existing annotation
+    selected_anno = return_anno_file('test_images', image_fname)
+    if selected_anno:
+        with st.expander(f'We found an existing annotation here'):
+            st.write(f'`{selected_anno}`')
+            if st.button(f'Load custom tags from the existing file'):
+                pass
+            
+    save_json_to_disk = st.checkbox('Save all changes to disk')
+    number_tags = st.number_input('Select the number of tags to use', min_value=0, value=0)
     tags = []
     
-    if number == 0:
+    if number_tags == 0:
         st.warning('No tags selected.')
     else:
-        with st.form("form_kv_pairs"):    
+        with st.form("kv_pairs"):    
             container = st.container()
-            for i in range(int(number)):
+            for i in range(int(number_tags)):
                     cA, cB, cC = st.columns(3)
                     with container:
                         textA = cA.text_input(f'ID_{i}_START_STR','Sample text',key=f'{i}_start_str')
@@ -215,12 +333,14 @@ def main():
                                 f'ID_{i}_PREFIX': textC,
                             }
                         )
-
             # Every form must have a submit button.
             submitted = st.form_submit_button("Save")
 
         if submitted:
             st.success('Saved changes.')
+            if save_json_to_disk:
+                with open(f'test_images/{Path(image_fname).stem}.json', 'w') as f:
+                    json.dump(tags, f)
             with st.expander("See list of selected tags"):
                 st.write(tags)
         else:
@@ -280,12 +400,12 @@ def main():
                     
                 with st.expander('Amazon Textract Response as JSON'):
                     st.write(t_json)
-                    st.download_button("Download json",json.dumps(t_json))
+                    st.download_button("Download json", json.dumps(t_json))
                     
                 with st.expander('Key-value pairs as DataFrame'):
                     st.write(t_df)
                     
-                    csv = convert_df(t_df)
+                    csv = convert_pandas(t_df)
                     st.download_button(
                          label="Download table as CSV",
                          data=csv,
