@@ -18,6 +18,7 @@ import tensorflow as tf
 from matplotlib import pyplot
 from pathlib import Path
 from PIL import Image
+from typing import List, Optional
 from streamlit_image_comparison import image_comparison
 
 from textractgeofinder.ocrdb import AreaSelection
@@ -34,7 +35,7 @@ from os.path import exists as path_exists
 path_repo_sauvolanet = 'ext/SauvolaNet'
 if not path_exists(path_repo_sauvolanet):
     os.system(f'git clone https://github.com/Leedeng/SauvolaNet.git {path_repo_sauvolanet}')
-sys.path.append(f'{path_repo_sauvolanet}/SauvolaDocBin')
+sys.path.append(f'{path_repo_sauvolanet}/SauvolaDocBin/')
 pd.set_option('display.float_format','{:.4f}'.format)
 from dataUtils import collect_binarization_by_dataset, DataGenerator
 from testUtils import prepare_inference, find_best_model
@@ -60,7 +61,7 @@ def sauvolanet_read_decode_image(im):
 
 # helper funcs
 # -----------------------------------------------------------
-def set_hierarchy_kv(list_kv: list[KeyValue], t_document: t2.TDocument, page_block: t2.TBlock, prefix="BORROWER"):
+def set_hierarchy_kv(list_kv, t_document: t2.TDocument, page_block: t2.TBlock, prefix="BORROWER"):
     """
     function to add "virtual" keys which we use to indicate context
     """
@@ -69,7 +70,7 @@ def set_hierarchy_kv(list_kv: list[KeyValue], t_document: t2.TDocument, page_blo
                                                     existing_key=t_document.get_block_by_id(x.key.id),
                                                     page_block=page_block)
 
-def add_sel_elements(t_document: t2.TDocument, selection_values: list[SelectionElement], key_base_name: str,
+def add_sel_elements(t_document: t2.TDocument, selection_values, key_base_name: str,
                      page_block: t2.TBlock) -> t2.TDocument:
     """
     Function that makes it easier to add selection elements to the Amazon Textract Response JSON schema
@@ -152,6 +153,10 @@ def cached_call_textract(input_image, textract, options):
         boto3_textract_client=textract, 
         features=options)
 
+def return_fnames(folder, extensions={'.png','.jpg','.jpeg'}):
+    f = (p for p in Path(folder).glob("**/*") if p.suffix in extensions)
+    return [x for x in f if 'ipynb_checkpoints' not in str(x)]
+
 @st.cache
 def return_anno_file(folder, image_fname):
     files = list(sorted([x for x in Path(folder).rglob('*.json')]))
@@ -232,7 +237,7 @@ def main():
 
     input_image = None
     if options == 'Choose sample from library':
-        image_files = list(sorted([x for x in Path('test_images').rglob('*.jpg')]))
+        image_files = return_fnames('test_images')
         selected_file = st.selectbox(
             'Select an image file from the list', image_files
         )
@@ -259,7 +264,7 @@ def main():
         input_image.thumbnail(max_im_size, Image.ANTIALIAS)
         with st.expander("See input image"):
             st.image(input_image, use_column_width=True)
-            st.info(f'Note: Image has been resized to fit within `{max_im_size}`')
+            st.info(f'The input image has been resized to fit within `{max_im_size}`')
     else:
         st.warning('There is no image loaded.')
         
