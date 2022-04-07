@@ -10,6 +10,7 @@ import io
 import json
 import re
 import os
+os.makedirs("ext",exist_ok=True)
 import sys
 import cv2
 import numpy as np 
@@ -42,22 +43,73 @@ from testUtils import prepare_inference, find_best_model
 from layerUtils import *
 from metrics import *
 
-# @st.cache
+@st.cache
 def sauvolanet_load_model(model_root = f'{path_repo_sauvolanet}/pretrained_models/'):
     for this in os.listdir(model_root) :
         if this.endswith('.h5') :
             model_filepath = os.path.join(model_root, this)
             model = prepare_inference(model_filepath)
             print(model_filepath)
-    print(model.summary())
     return model
 
-def sauvolanet_read_decode_image(im):
+def sauvolanet_read_decode_image(model,im):
     rgb = np.array(im)
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     x = gray.astype('float32')[None, ..., None]/255.
     pred = model.predict(x)
     return Image.fromarray(pred[0,...,0] > 0)
+
+# Source: https://github.com/cszn/SCUNet
+# -----------------------------------------------------------
+# Kai Zhang (e-mail: cskaizhang@gmail.com; github: https://github.com/cszn)
+# by Kai Zhang (2021/05-2021/11)
+
+path_repo_SCUNet = 'ext/SCUNet'
+if not path_exists(path_repo_SCUNet):
+    os.system(f'git clone https://github.com/cszn/SCUNet.git {path_repo_SCUNet}')
+    os.system(f'wget https://github.com/cszn/KAIR/releases/download/v1.0/scunet_color_real_psnr.pth -P {path_repo_SCUNet}/model_zoo')
+from datetime import datetime
+from collections import OrderedDict
+import torch
+sys.path.append(f'{path_repo_SCUNet}')
+from utils import utils_model
+from utils import utils_image as util
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+n_channels = 3
+
+@st.cache
+def scunet_load_model(model_path=f'{path_repo_SCUNet}/model_zoo/scunet_color_real_psnr.pth'):
+    from models.network_scunet import SCUNet as net
+    model = net(in_nc=n_channels,config=[4,4,4,4,4,4,4],dim=64)
+    model.load_state_dict(torch.load(model_path), strict=True)
+    model.eval()
+    for k, v in model.named_parameters():
+        v.requires_grad = False
+        
+    return model.to(device)
+    
+def scunet_inference(model,img):
+    # ------------------------------------
+    # (1) img_L
+    # ------------------------------------
+    img_L = np.asarray(img)
+    if img_L.ndim == 2:
+        img_L = cv2.cvtColor(img_L, cv2.COLOR_GRAY2RGB)  # GGG
+    else:
+        img_L = cv2.cvtColor(img_L, cv2.COLOR_BGR2RGB)  # RGB
+    
+    img_L = util.uint2single(img_L)
+    img_L = util.single2tensor4(img_L)
+    img_L = img_L.to(device)
+    
+    # ------------------------------------
+    # (2) img_E
+    # ------------------------------------
+    img_E = model(img_L)
+    img_E = util.tensor2uint(img_E)
+
+    return Image.fromarray(img_E)
 
 # helper funcs
 # -----------------------------------------------------------
@@ -187,10 +239,10 @@ st.set_page_config(
 def main():
     # intro and sidebar
     #######################
-    st.title('Amazon Textract Workbench')
+    st.title('Amazon Textract Workbench (v0.1)')
     st.markdown('**Author:** Nico Metallo (metallo@amazon.com)')
     with st.sidebar:
-        st.header('Introduction')
+        st.subheader('Introduction')
         st.markdown('''
         This is a repo showing a quick start to taking advantage of the geometric context 
         found in a document to make tagging easier and more accurate with Amazon Textract. 
@@ -198,7 +250,7 @@ def main():
         [Textractor](https://github.com/aws-samples/amazon-textract-textractor) 
         Python library by Martin Schade.
         ''')
-        st.header('What does this do?')
+        st.subheader('What does this do?')
         st.markdown('''
         It takes the output from the `AnalyzeText` Forms API and, combined with the `XY` 
         coordinates from the key/values detected, it allows you to tag these pairs into 
@@ -206,7 +258,7 @@ def main():
         ''')
 
         # connect AWS credentials
-        st.header('Add your `AWS` credentials to SM Studio Lab')
+        st.subheader('Add your AWS credentials to SM Studio Lab')
         st.markdown('Nothing will be saved locally, all is done on the fly.')
         credentials = pd.DataFrame()
         uploaded_file = st.file_uploader("Upload your csv file", type=['csv'])
@@ -226,7 +278,7 @@ def main():
 
     # read input image
     #######################
-    st.subheader('Read input image')
+    st.header('Read input image')
     options = st.selectbox('Please choose any of the following options',
         (
             'Choose sample from library',
@@ -270,12 +322,13 @@ def main():
         
     # image pre-processing
     #######################
-    st.subheader('Image pre-processing')
+    st.header('Image pre-processing')
     options_preproc = st.selectbox('Please choose any of the following options',
         (
             'No pre-processing',
             'SauvolaNet: Learning Adaptive Sauvola Network for Degraded Document Binarization (ICDAR2021)',
-            'Upload your own image',
+            'Practical Blind Denoising via Swin-Conv-UNet and Data Synthesis',
+            'Restormer: Efficient Transformer for High-Resolution Image Restoration (CVPR2022)',
         )
     )
     
@@ -285,16 +338,18 @@ def main():
             try:
                 with st.spinner():
                     sauvolanet_model = sauvolanet_load_model()
-                    st.error('good1')
-                    modified_image = sauvolanet_read_decode_image(input_image)
-                    # output = infer(model, np.asarray(input_image))
-                    # output_image = Image.fromarray((output * 255).astype(np.uint8))
-                    st.success('Image was pre-processed')
+                    modified_image = sauvolanet_read_decode_image(sauvolanet_model,input_image)
+                    st.success('Done!')
             except Exception as e:
                 st.error(e)
-        else:
-            st.write(options_preproc)
-            st.error('what did you write')
+        if options_preproc == 'Practical Blind Denoising via Swin-Conv-UNet and Data Synthesis':
+            try:
+                with st.spinner():
+                    scunet_model = scunet_load_model()
+                    modified_image = scunet_inference(scunet_model,input_image)
+                    st.success('Done!')
+            except Exception as e:
+                st.error(e)
                 
         if modified_image:
             with st.expander("See modified image"):
@@ -305,54 +360,9 @@ def main():
     else:
         st.warning('There is no image loaded.')
     
-    # 2. Define your K/V pairs
-    st.subheader("Select custom tags from key-value pairs (optional)")
-    
-    ## check if there's existing annotation
-    selected_anno = return_anno_file('test_images', image_fname)
-    if selected_anno:
-        with st.expander(f'We found an existing annotation here'):
-            st.write(f'`{selected_anno}`')
-            if st.button(f'Load custom tags from the existing file'):
-                pass
-            
-    save_json_to_disk = st.checkbox('Save all changes to disk')
-    number_tags = st.number_input('Select the number of tags to use', min_value=0, value=0)
-    tags = []
-    
-    if number_tags == 0:
-        st.warning('No tags selected.')
-    else:
-        with st.form("kv_pairs"):    
-            container = st.container()
-            for i in range(int(number_tags)):
-                    cA, cB, cC = st.columns(3)
-                    with container:
-                        textA = cA.text_input(f'ID_{i}_START_STR','Sample text',key=f'{i}_start_str')
-                        textB = cB.text_input(f'ID_{i}_END_STR',key=f'{i}_end_str')
-                        textC = cC.text_input(f'ID_{i}_PREFIX',f'PREFIX_{i}',key=f'{i}_prefix')
-                        tags.append(
-                            {
-                                f'ID_{i}_START_STR': textA,
-                                f'ID_{i}_END_STR': textB,
-                                f'ID_{i}_PREFIX': textC,
-                            }
-                        )
-            # Every form must have a submit button.
-            submitted = st.form_submit_button("Save")
-
-        if submitted:
-            st.success('Saved changes.')
-            if save_json_to_disk:
-                with open(f'test_images/{Path(image_fname).stem}.json', 'w') as f:
-                    json.dump(tags, f)
-            with st.expander("See list of selected tags"):
-                st.write(tags)
-        else:
-            st.warning('No tags selected.')
-    
-    # Get OCR predictions
-    st.subheader('Run Amazon Textract')
+    # retrieve ocr preds
+    #######################
+    st.header('Run Amazon Textract')
     st.write('')
     features = [str(v) for k,v in enumerate(Textract_Features)]
     options = st.multiselect(
@@ -422,7 +432,53 @@ def main():
     else:
         st.warning('There is no image loaded.')
         
+    # image post-processing
+    #######################
+    st.header('Image post-processing')
+    st.subheader("Select custom tags from key-value pairs (optional)")
     
+    ## check if there's existing annotation
+    selected_anno = return_anno_file('test_images', image_fname)
+    if selected_anno:
+        with st.expander(f'We found an existing annotation here'):
+            st.write(f'`{selected_anno}`')
+            if st.button(f'Load custom tags from the existing file'):
+                pass
+            
+    save_json_to_disk = st.checkbox('Save all changes to disk')
+    number_tags = st.number_input('Select the number of tags to use', min_value=0, value=0)
+    tags = []
+    
+    if number_tags == 0:
+        st.warning('No tags selected.')
+    else:
+        with st.form("kv_pairs"):    
+            container = st.container()
+            for i in range(int(number_tags)):
+                    cA, cB, cC = st.columns(3)
+                    with container:
+                        textA = cA.text_input(f'ID_{i}_START_STR','Sample text',key=f'{i}_start_str')
+                        textB = cB.text_input(f'ID_{i}_END_STR',key=f'{i}_end_str')
+                        textC = cC.text_input(f'ID_{i}_PREFIX',f'PREFIX_{i}',key=f'{i}_prefix')
+                        tags.append(
+                            {
+                                f'ID_{i}_START_STR': textA,
+                                f'ID_{i}_END_STR': textB,
+                                f'ID_{i}_PREFIX': textC,
+                            }
+                        )
+            # Every form must have a submit button.
+            submitted = st.form_submit_button("Save")
+
+        if submitted:
+            st.success('Saved changes.')
+            if save_json_to_disk:
+                with open(f'test_images/{Path(image_fname).stem}.json', 'w') as f:
+                    json.dump(tags, f)
+            with st.expander("See list of selected tags"):
+                st.write(tags)
+        else:
+            st.warning('No tags selected.')
     
     # footer
     st.header('References')
@@ -432,6 +488,26 @@ def main():
     - [Textractor GeoFinder Sample Notebook](https://github.com/aws-samples/amazon-textract-textractor/blob/master/tpipelinegeofinder/geofinder-sample-notebook.ipynb)
     - [Intelligent Document Processing Workshop](https://catalog.us-east-1.prod.workshops.aws/workshops/c2af04b2-54ab-4b3d-be73-c7dd39074b20/en-US/)
     ''')
+    st.code(
+        '''
+    @INPROCEEDINGS{9506664,  
+      author={Li, Deng and Wu, Yue and Zhou, Yicong},  
+      booktitle={The 16th International Conference on Document Analysis and Recognition (ICDAR)},   
+      title={SauvolaNet: Learning Adaptive Sauvola Network for Degraded Document Binarization},   
+      year={2021},  
+      volume={},  
+      number={},  
+      pages={538–553},  
+      doi={https://doi.org/10.1007/978-3-030-86337-1_36}}
+  
+    @article{zhang2022practical,
+    title={Practical Blind Denoising via Swin-Conv-UNet and Data Synthesis},
+    author={Zhang, Kai and Li, Yawei and Liang, Jingyun and Cao, Jiezhang and Zhang, Yulun and Tang, Hao and Timofte, Radu and Van Gool, Luc},
+    journal={arXiv preprint},
+    year={2022}
+    }
+        '''
+        , language='bibtex')
 
 # run application
 # -----------------------------------------------------------

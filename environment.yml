@@ -3,7 +3,7 @@
 #   $ conda activate <name>
 name: machinelearnear-textract
 dependencies:
-  - python=3.8
+  - python=3.7 # problems with py39
   - pip
   - nb_conda_kernels
   - ipykernel
@@ -23,5 +23,10 @@ dependencies:
     - pandas
     - parse
     - tensorflow==2.3
+    - torch
+    - torchvision
     - scipy
     - streamlit_image_comparison
+    - thop
+    - einops
+    - timm
