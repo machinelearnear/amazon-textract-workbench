@@ -598,19 +598,21 @@ def main():
         if st.session_state.response:
             options = st.selectbox(
                 'Please select any of the following models implemented on Hugging Face',
-                ['Not selected','Entity recognition','Detect PII'],
+                ['Not selected','Entity recognition','Detect PII','Topic Modeling'],
                 help='https://docs.aws.amazon.com/comprehend/latest/dg/get-started-api.html',
             )
-
             if options == 'Entity recognition':
                 ner = comprehend_client.detect_entities(
                     Text=parse_response(st.session_state.response), LanguageCode='en')
                 with st.expander('View response'):
                     st.write(ner)
             if options == 'Detect PII':
+                pii = comprehend_client.detect_pii_entities(
+                    Text=parse_response(st.session_state.response), LanguageCode='en')
+                with st.expander('View response'):
+                    st.write(pii)
+            if options == 'Topic Modeling':
                 st.warning('Not implemented yet.')
-
-            st.write(f'You selected: `{options}`')
         else:
             st.warning('No response generated')
     else:
@@ -636,6 +638,40 @@ def main():
                                max_length=130, min_length=30, do_sample=False)
                 with st.expander('View response'):
                     st.write(summary)
+                    
+            st.write(f'You selected: `{options}`')
+        else:
+            st.warning('No response generated')
+            
+    st.subheader("Zero-shot classification")
+    if input_image:
+        if st.session_state.response:
+            options = st.selectbox(
+                'Please select any of the following models implemented on Hugging Face',
+                [
+                    'Not selected',
+                    'typeform/distilbert-base-uncased-mnli',
+                    'cross-encoder/nli-distilroberta-base',
+                    'MoritzLaurer/mDeBERTa-v3-base-mnli-xnli',
+                    'Use another',
+                ],
+                help='https://huggingface.co/models?pipeline_tag=zero-shot-classification',
+            )
+            
+            if options == 'Use another':
+                options = st.text_input('Enter model name here, e.g. "cross-encoder/nli-distilroberta-base"')
+            
+            if not options == 'Not selected' and len(options)>0: 
+                with st.spinner('Downloading model weights and loading...'):
+                    pipe = load_model_pipeline(task="zero-shot-classification", model_name=options)
+                candidate_labels = st.text_input(
+                    'Possible class names (comma-separated)',
+                    value='utility bill, benefit application, medical note',
+                )
+                if candidate_labels: candidate_labels = [x.strip() for x in candidate_labels.split(',')]
+                zero_shot_class = pipe(parse_response(st.session_state.response), candidate_labels)
+                with st.expander('View response'):
+                    st.write(zero_shot_class)
                     
             st.write(f'You selected: `{options}`')
         else:
