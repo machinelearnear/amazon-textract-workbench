@@ -206,6 +206,15 @@ def start_textract_client(credentials):
         region_name='us-east-2',
     )
 
+@st.experimental_singleton
+def start_comprehend_client(credentials):
+    return boto3.client(
+        'comprehend',
+        aws_access_key_id=credentials['Access key ID'].values[0],
+        aws_secret_access_key=credentials['Secret access key'].values[0],
+        region_name='us-east-2',
+    )
+
 def return_fnames(folder, extensions={'.png','.jpg','.jpeg'}):
     f = (p for p in Path(folder).glob("**/*") if p.suffix in extensions)
     return [x for x in f if 'ipynb_checkpoints' not in str(x)]
@@ -279,19 +288,23 @@ def main():
     #######################
     st.title('Amazon Textract Workbench v0.1')
     st.markdown('''
-    This web app shows you a step by step tutorial on how to take advantage of the geometric
-    context found in an image to make the tagging of key and value pairs easier and more accurate
-    with [Amazon Textract](https://aws.amazon.com/textract/). We are running this demo on top of
-    [SageMaker Studio Lab](https://www.youtube.com/watch?v=FUEIwAsrMP4) using the 
-    [Textractor](https://github.com/aws-samples/amazon-textract-textractor) library developed by 
-    [Martin Schade](https://www.linkedin.com/in/martinschade/) et al.
+    This repo is aimed at giving you a place to experiment with the tooling and 
+    will show you a step by step tutorial on how to take advantage of the geometric 
+    context detected in an image to make the tagging of key and value pairs easier 
+    and more accurate with [Amazon Textract](https://aws.amazon.com/textract/). We are 
+    running this application on top of [SageMaker Studio Lab](https://studiolab.sagemaker.aws/) 
+    combining multiple libraries such as [Hugging Face](https://huggingface.co/), 
+    [SpaCy](https://spacy.io/), and [Textractor](https://github.com/aws-samples/amazon-textract-textractor). 
+    We will also make use of the recently launched 
+    ["Queries"](https://aws.amazon.com/blogs/machine-learning/specify-and-extract-information-from-documents-using-the-new-queries-feature-in-amazon-textract/)
+    functionality in Textract. 
     ''')
     
     with st.sidebar:
         # about
         st.subheader('About this demo')
         st.markdown('''
-        Built by Nicolás Metallo (metallo@amazon.com)
+        Author: Nicolás Metallo (metallo@amazon.com)
         ''')
         st.markdown(f'This web app is running on `{device}`')
         
@@ -306,6 +319,7 @@ def main():
 
         if not credentials.empty:
             textract_client = start_textract_client(credentials)
+            comprehend_client = start_comprehend_client(credentials)
             st.success('AWS credentials are loaded.')
         else:
             st.warning('AWS credentials are not loaded.')      
@@ -317,7 +331,7 @@ def main():
         (
             'Choose sample image from library',
             'Download image from URL',
-            'Upload your own image',
+            'Upload your own image / file',
         )
     )
 
@@ -343,7 +357,7 @@ def main():
             input_image = Image.open(io.BytesIO(r.content))
         except Exception:
             st.error('There was an error downloading the image. Please check the URL again.')
-    elif options == 'Upload your own image':
+    elif options == 'Upload your own image / file':
         uploaded_file = st.file_uploader("Choose file to upload", key='uploaded_file_input_image')
         if uploaded_file:
             if Path(uploaded_file.name).suffix != '.pdf':
@@ -383,7 +397,7 @@ def main():
                     st.success('Done!')
             except Exception as e:
                 st.error(e)
-        if options_preproc == 'Practical Blind Denoising via Swin-Conv-UNet and Data Synthesis':
+        elif options_preproc == 'Practical Blind Denoising via Swin-Conv-UNet and Data Synthesis':
             try:
                 with st.spinner():
                     scunet_model = scunet_load_model()
@@ -391,6 +405,8 @@ def main():
                     st.success('Done!')
             except Exception as e:
                 st.error(e)
+        elif options_preproc == 'Restormer: Efficient Transformer for High-Resolution Image Restoration (CVPR2022)':
+            st.warning('Not implemented yet.')
                 
         if modified_image:
             with st.expander("See modified image"):
@@ -475,6 +491,7 @@ def main():
     if input_image:
         if not credentials.empty:
             aa, bb = st.columns([1,5])
+            placeholder = aa.empty()
             if aa.button('✍ Submit'):
                 st.session_state.response = None
                 if options == 'AnalyzeDocument' and feature_types:
@@ -520,7 +537,7 @@ def main():
                     )
                     
                 if response:
-                    aa.success('Finished!')
+                    placeholder.success('Finished!')
                     with bb.expander('View response'):
                         st.markdown('**RAW TEXT**')
                         output_text = parse_response(response)
@@ -577,12 +594,34 @@ def main():
     # expand with Amazon Comprehend and Hugging Face
     #######################
     st.header('(3) Amazon Comprehend')
+    if input_image:
+        if st.session_state.response:
+            options = st.selectbox(
+                'Please select any of the following models implemented on Hugging Face',
+                ['Not selected','Entity recognition','Detect PII'],
+                help='https://docs.aws.amazon.com/comprehend/latest/dg/get-started-api.html',
+            )
+
+            if options == 'Entity recognition':
+                ner = comprehend_client.detect_entities(
+                    Text=parse_response(st.session_state.response), LanguageCode='en')
+                with st.expander('View response'):
+                    st.write(ner)
+            if options == 'Detect PII':
+                st.warning('Not implemented yet.')
+
+            st.write(f'You selected: `{options}`')
+        else:
+            st.warning('No response generated')
+    else:
+        st.warning('There is no image loaded.')
+
     st.header('(4) Hugging Face Transformers')
     st.subheader("Summary")
     if input_image:
         if st.session_state.response:
             options = st.selectbox(
-                'Please select any of the following to review the Textract response',
+                'Please select any of the following models implemented on Hugging Face',
                 ['Not selected','google/pegasus-xsum','facebook/bart-large-cnn', 'Use another'],
                 help='https://huggingface.co/models?pipeline_tag=summarization&sort=downloads',
             )
@@ -608,7 +647,7 @@ def main():
         if st.session_state.response:
             options = st.selectbox(
                 'Select visualisers:',
-                ["Not selected","NER"],
+                ["Not selected","NER with 'en_core_web_sm'"],
                 help='https://github.com/explosion/spacy-streamlit',
             )
             
