@@ -10,6 +10,7 @@ dependencies:
   - ipywidgets
   - gh
   - opencv
+  - poppler
   - pip:
     - streamlit
     - gradio
@@ -20,9 +21,10 @@ dependencies:
     - amazon-textract-geofinder
     - amazon-textract-caller
     - amazon-textract-response-parser
+    - transformers
     - pandas
     - parse
-    - tensorflow==2.3
+    - tensorflow==2.5.0
     - torch
     - torchvision
     - scipy
@@ -30,3 +32,5 @@ dependencies:
     - thop
     - einops
     - timm
+    - tabulate
+    - pdf2image

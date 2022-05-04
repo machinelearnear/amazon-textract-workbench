@@ -1,4 +1,4 @@
-# Use Streamlit in Sagemaker Studio Lab
+# Amazon Textract Workbench
 # Author: https://github.com/machinelearnear
 
 # import dependencies
@@ -10,16 +10,19 @@ import io
 import json
 import re
 import os
-os.makedirs("ext",exist_ok=True)
+os.makedirs("dependencies",exist_ok=True)
 import sys
 import cv2
 import numpy as np 
 import tensorflow as tf
 
+from transformers import pipeline
 from matplotlib import pyplot
 from pathlib import Path
 from PIL import Image
 from typing import List, Optional
+from tabulate import tabulate
+from pdf2image import convert_from_path, convert_from_bytes
 from streamlit_image_comparison import image_comparison
 
 from textractgeofinder.ocrdb import AreaSelection
@@ -30,10 +33,12 @@ from textractoverlayer.t_overlay import DocumentDimensions, get_bounding_boxes
 
 import trp.trp2 as t2
 
+# PRE-PROCESSING (1)
+# -----------------------------------------------------------
 # Source: https://github.com/Leedeng/SauvolaNet
 # -----------------------------------------------------------
 from os.path import exists as path_exists
-path_repo_sauvolanet = 'ext/SauvolaNet'
+path_repo_sauvolanet = 'dependencies/SauvolaNet'
 if not path_exists(path_repo_sauvolanet):
     os.system(f'git clone https://github.com/Leedeng/SauvolaNet.git {path_repo_sauvolanet}')
 sys.path.append(f'{path_repo_sauvolanet}/SauvolaDocBin/')
@@ -59,12 +64,13 @@ def sauvolanet_read_decode_image(model,im):
     pred = model.predict(x)
     return Image.fromarray(pred[0,...,0] > 0)
 
-# Source: https://github.com/cszn/SCUNet
+# PRE-PROCESSING (2)
 # -----------------------------------------------------------
-# Kai Zhang (e-mail: cskaizhang@gmail.com; github: https://github.com/cszn)
+# Source: Kai Zhang (e-mail: cskaizhang@gmail.com; github: https://github.com/cszn)
 # by Kai Zhang (2021/05-2021/11)
+# -----------------------------------------------------------
 
-path_repo_SCUNet = 'ext/SCUNet'
+path_repo_SCUNet = 'dependencies/SCUNet'
 if not path_exists(path_repo_SCUNet):
     os.system(f'git clone https://github.com/cszn/SCUNet.git {path_repo_SCUNet}')
     os.system(f'wget https://github.com/cszn/KAIR/releases/download/v1.0/scunet_color_real_psnr.pth -P {path_repo_SCUNet}/model_zoo')
@@ -191,6 +197,7 @@ def convert_pandas(df):
     # IMPORTANT: Cache the conversion to prevent computation on every rerun
     return df.to_csv().encode('utf-8')
 
+@st.experimental_singleton
 def start_textract_client(credentials):
     return boto3.client(
         'textract',
@@ -198,12 +205,6 @@ def start_textract_client(credentials):
         aws_secret_access_key=credentials['Secret access key'].values[0],
         region_name='us-east-2',
     )
-
-def cached_call_textract(input_image, textract, options):
-    return call_textract(
-        input_document=image_to_byte_array(input_image),
-        boto3_textract_client=textract, 
-        features=options)
 
 def return_fnames(folder, extensions={'.png','.jpg','.jpeg'}):
     f = (p for p in Path(folder).glob("**/*") if p.suffix in extensions)
@@ -227,6 +228,43 @@ def get_filename_from_cd(cd):
         return None
     return fname[0]
 
+def add_item_to_input_queries_list(text, alias='', verbose=False):
+    text = re.sub('[^\w\s]','', text)
+    if len(alias)==0:
+        alias = text.replace(' ','_').upper()
+
+    if not any(text in x['Text'] for x in st.session_state.input_queries):
+        st.session_state.input_queries.append(
+            {
+                "Text": text, 
+                "Alias": alias
+            }
+        )
+        if verbose: st.success('Added')
+    else:
+        if verbose: st.warning('Already exists')
+
+def remove_item():
+    del st.session_state.input_queries[st.session_state.index]
+    
+def clear_all_items():
+    st.session_state.input_queries = []
+    st.session_state.index = 0
+
+def parse_response(response):
+    from trp import Document
+    doc = Document(response)
+    text = ''
+    for page in doc.pages:
+        for line in page.lines:
+            for word in line.words:
+                text = text + word.text + ' '
+    return text.strip()
+
+@st.experimental_memo
+def hf_pipeline(model_name, task):
+    return pipeline(task, model=model_name)
+
 # streamlit app
 # -----------------------------------------------------------
 st.set_page_config(
@@ -239,63 +277,64 @@ st.set_page_config(
 def main():
     # intro and sidebar
     #######################
-    st.title('Amazon Textract Workbench (v0.1)')
-    st.markdown('**Author:** Nico Metallo (metallo@amazon.com)')
+    st.title('Amazon Textract Workbench v0.1')
+    st.markdown('''
+    This web app shows you a step by step tutorial on how to take advantage of the geometric
+    context found in an image to make the tagging of key and value pairs easier and more accurate
+    with [Amazon Textract](https://aws.amazon.com/textract/). We are running this demo on top of
+    [SageMaker Studio Lab](https://www.youtube.com/watch?v=FUEIwAsrMP4) using the 
+    [Textractor](https://github.com/aws-samples/amazon-textract-textractor) library developed by 
+    [Martin Schade](https://www.linkedin.com/in/martinschade/) et al.
+    ''')
+    
     with st.sidebar:
-        st.subheader('Introduction')
+        # about
+        st.subheader('About this demo')
         st.markdown('''
-        This is a repo showing a quick start to taking advantage of the geometric context 
-        found in a document to make tagging easier and more accurate with Amazon Textract. 
-        We are going to be using SageMaker StudioLab as our dev environment and the 
-        [Textractor](https://github.com/aws-samples/amazon-textract-textractor) 
-        Python library by Martin Schade.
+        Built by Nicolás Metallo (metallo@amazon.com)
         ''')
-        st.subheader('What does this do?')
-        st.markdown('''
-        It takes the output from the `AnalyzeText` Forms API and, combined with the `XY` 
-        coordinates from the key/values detected, it allows you to tag these pairs into 
-        groups for convenience, e.g. all "Patient" KV pairs.
-        ''')
-
-        # connect AWS credentials
-        st.subheader('Add your AWS credentials to SM Studio Lab')
-        st.markdown('Nothing will be saved locally, all is done on the fly.')
-        credentials = pd.DataFrame()
-        uploaded_file = st.file_uploader("Upload your csv file", type=['csv'])
+        st.markdown(f'This web app is running on `{device}`')
         
-        if uploaded_file:
-            credentials = pd.read_csv(io.StringIO(uploaded_file.read().decode('utf-8')))
-            st.success('File was read successfully')
+        # connect AWS credentials
+        with st.expander('Connect your AWS credentials'):
+            st.markdown('Required to use Amazon Textract. No data is stored locally, only streamed to memory.')
+            credentials = pd.DataFrame()
+            uploaded_file = st.file_uploader("Upload your csv file", type=['csv'], key='uploaded_file_credentials')
+
+            if uploaded_file:
+                credentials = pd.read_csv(io.StringIO(uploaded_file.read().decode('utf-8')))
 
         if not credentials.empty:
-            textract = start_textract_client(credentials)
+            textract_client = start_textract_client(credentials)
+            st.success('AWS credentials are loaded.')
         else:
-            st.warning('AWS credentials are not loaded.')
-            
-        # author
-        st.info('Author: Nico Metallo')
-        
+            st.warning('AWS credentials are not loaded.')      
 
-    # read input image
+    # (1) read input image
     #######################
-    st.header('Read input image')
+    st.header('(1) Read input image')
     options = st.selectbox('Please choose any of the following options',
         (
-            'Choose sample from library',
+            'Choose sample image from library',
             'Download image from URL',
             'Upload your own image',
         )
     )
 
     input_image = None
-    if options == 'Choose sample from library':
+    if options == 'Choose sample image from library':
         image_files = return_fnames('test_images')
         selected_file = st.selectbox(
-            'Select an image file from the list', image_files
+            'Select an image file or PDF from the list', image_files
         )
         image_fname = selected_file
         st.write(f'You have selected `{image_fname}`')
-        input_image = Image.open(selected_file)
+        
+        if Path(image_fname).suffix != '.pdf':
+            input_image = Image.open(selected_file)
+        else:
+            input_image = convert_from_path(selected_file,fmt='png')[0] # only first page
+            
     elif options == 'Download image from URL':
         image_url = st.text_input('Image URL')
         try:
@@ -305,15 +344,17 @@ def main():
         except Exception:
             st.error('There was an error downloading the image. Please check the URL again.')
     elif options == 'Upload your own image':
-        uploaded_file = st.file_uploader("Choose file to upload")
+        uploaded_file = st.file_uploader("Choose file to upload", key='uploaded_file_input_image')
         if uploaded_file:
-            image_fname = uploaded_file.name
-            input_image = Image.open(io.BytesIO(uploaded_file.decode()))
+            if Path(uploaded_file.name).suffix != '.pdf':
+                input_image = Image.open(io.BytesIO(uploaded_file.decode()))
+            else:
+                input_image = convert_from_bytes(uploaded_file.read(),fmt='png')[0] # only first page
             st.success('Image was successfully uploaded')
 
     if input_image:
         max_im_size = (1000,1000)
-        input_image.thumbnail(max_im_size, Image.ANTIALIAS)
+        input_image.thumbnail(max_im_size, Image.Resampling.LANCZOS)
         with st.expander("See input image"):
             st.image(input_image, use_column_width=True)
             st.info(f'The input image has been resized to fit within `{max_im_size}`')
@@ -322,7 +363,7 @@ def main():
         
     # image pre-processing
     #######################
-    st.header('Image pre-processing')
+    st.subheader('(Optional) Image pre-processing')
     options_preproc = st.selectbox('Please choose any of the following options',
         (
             'No pre-processing',
@@ -360,134 +401,208 @@ def main():
     else:
         st.warning('There is no image loaded.')
     
-    # retrieve ocr preds
+    # (2) retrieve ocr preds
     #######################
-    st.header('Run Amazon Textract')
-    st.write('')
-    features = [str(v) for k,v in enumerate(Textract_Features)]
-    options = st.multiselect(
-        'Select additional actions to use from Amazon Textract',
-        [v for k,v in enumerate(Textract_Features)],
-        help='Source: https://docs.aws.amazon.com/textract/latest/dg/API_Operations.html')
+    st.header('(2) Amazon Textract')
+    if not 'response' in st.session_state:
+        st.session_state.response = None
+    feature_types=[]
+    cAA, cBA = st.columns(2)
+    with cAA:
+        options = st.selectbox(
+             'The following actions are supported:',
+             ('DetectDocumentText','AnalyzeDocument','AnalyzeExpense','AnalyzeID'),
+            help='Read more: https://docs.aws.amazon.com/textract/latest/dg/API_Operations.html')
+        st.write(f'You selected: `{options}`')
+    with cBA:
+        if options == 'AnalyzeDocument':
+            feature_types = st.multiselect(
+                'Select feature types for "AnalyzeDocument"',
+                ['TABLES','FORMS','QUERIES'],
+                help='Read more: https://docs.aws.amazon.com/textract/latest/dg/API_AnalyzeDocument.html')
+            st.write(f'You selected: `{feature_types}`')
+        
+    if 'QUERIES' in feature_types:
+        if 'input_queries' not in st.session_state:
+            st.session_state.input_queries = []
+        if 'index' not in st.session_state:
+            st.session_state.index = 0
+        
+        with st.expander('Would you like to upload your existing list of queries?'):
+            uploaded_file = st.file_uploader("Choose file to upload", key='uploaded_file_queries')
+            if uploaded_file:
+                queries = io.StringIO(uploaded_file.getvalue().decode("utf-8")).read()
+                queries = [x.strip().lower() for x in queries.split(',')]
+                for x in queries: add_item_to_input_queries_list(x)
+                st.success('List of queries was successfully uploaded')   
 
-    t_json = None
-    t_df = pd.DataFrame()
+        with st.expander('Input your new queries here'):
+            cAB, cBB = st.columns([3,1])
+            with cAB:
+                st.text_input('Input your new query',
+                              key='add_query_text',
+                              help='Input queries that Textract will use to extract the data that is most important to you.')
+            with cBB:
+                st.text_input('Alias (Optional)',
+                              key='add_query_alias')
 
+            if st.button('+ Add query') and len(st.session_state.add_query_text)>0:
+                input_query_text = st.session_state.add_query_text.strip()
+                input_query_alias = st.session_state.add_query_alias
+                add_item_to_input_queries_list(input_query_text, input_query_alias, verbose=True)
+            
+        if len(st.session_state.input_queries)==0: 
+            st.warning('No queries selected')
+        else:
+            with st.expander('Edit existing queries'):
+                cAC, cBC = st.columns([3,1])
+                cAC.write(st.session_state.input_queries)
+                cBC.number_input(
+                    'Select entry number',
+                    min_value=0,
+                    max_value=len(st.session_state.input_queries)-1,
+                    key='index',
+                )
+                if cBC.button('Remove item',on_click=remove_item):
+                    st.success('Deleted!')
+                if cBC.button('Clear all',on_click=clear_all_items):
+                    if len(st.session_state.input_queries)==0:
+                        st.success('Cleared!')
+                    else:
+                        cBC.warning('Delete the uploaded file to clear all')
+                    
+    st.subheader('Run and review response')
     if input_image:
         if not credentials.empty:
-            if st.button('Get OCR Predictions'):
-                try:
-                    t_json = cached_call_textract(input_image, textract, options)
-                    
-                    # convert json > string > csv > pandas
-                    t_df = t_json_to_t_df(t_json)
-                    
-                    st.success('Done!')
-                except Exception as e:
-                    st.error(e)
-                    
-            if tags:
-                if st.button('Get Custom KV Pairs'):
-                    if t_json:
-                        # we use this information to add new key value pairs to the Amazon Textract Response JSON schema
-                        t_document = tag_kv_pairs_to_text(t_json, tags)
-                        
-                        # convert json > string > csv > pandas
-                        t_df = t_json_to_t_df(t2.TDocumentSchema().dump(t_document))
-
-                        st.success('Done!')
+            aa, bb = st.columns([1,5])
+            if aa.button('✍ Submit'):
+                st.session_state.response = None
+                if options == 'AnalyzeDocument' and feature_types:
+                    if 'QUERIES' in feature_types:
+                        if len(st.session_state.input_queries)==0:
+                            st.error('Please add queries before you submit your request with QUERIES')
+                        else:
+                            response = textract_client.analyze_document(
+                                Document = {
+                                    'Bytes': image_to_byte_array(input_image),
+                                },
+                                FeatureTypes = feature_types,
+                                QueriesConfig={
+                                    'Queries': st.session_state.input_queries[:15] # max queries per page: 15
+                                }
+                            )
                     else:
-                        st.warning('Please run "Get OCR predictions" first')
-            else:
-                st.warning('No tags selected')
-                
-            if t_json and not t_df.empty:
-                st.subheader('See results')
-                with st.expander('Expand to see image with overlayed predictions'):
-                    document_dimension:DocumentDimensions = DocumentDimensions(
-                        doc_width=input_image.size[0], doc_height=input_image.size[1])
-                    overlay=[Textract_Types.WORD, Textract_Types.CELL]
-
-                    # bounding_box_list = get_bounding_boxes(
-                    #     textract_json=t_json,
-                    #     document_dimensions=document_dimension,
-                    #     overlay_features=overlay)
+                        response = textract_client.analyze_document(
+                            Document = {
+                                'Bytes': image_to_byte_array(input_image),
+                            },
+                            FeatureTypes = feature_types,
+                        )
+                elif options == 'AnalyzeExpense':
+                    response = textract_client.analyze_expense(
+                        Document={
+                            'Bytes': image_to_byte_array(input_image),
+                        }
+                    )
+                elif options == 'AnalyzeID':
+                    response = textract_client.analyze_id(
+                        DocumentPages=[
+                            {
+                                'Bytes': image_to_byte_array(input_image),
+                            },
+                        ]
+                    )
+                else:
+                    response = textract_client.detect_document_text(
+                        Document={
+                            'Bytes': image_to_byte_array(input_image),
+                        }
+                    )
                     
-                with st.expander('Amazon Textract Response as JSON'):
-                    st.write(t_json)
-                    st.download_button("Download json", json.dumps(t_json))
-                    
-                with st.expander('Key-value pairs as DataFrame'):
-                    st.write(t_df)
-                    
-                    csv = convert_pandas(t_df)
-                    st.download_button(
-                         label="Download table as CSV",
-                         data=csv,
-                         file_name='textract_output.csv',
-                         mime='text/csv',
-                     )
+                if response:
+                    aa.success('Finished!')
+                    with bb.expander('View response'):
+                        st.markdown('**RAW TEXT**')
+                        output_text = parse_response(response)
+                        st.write(output_text)
+                        st.markdown('**JSON**')
+                        st.write(response)
+                        
+                    if feature_types:
+                        with bb.expander('View response from AnalyzeDocument'):
+                            if 'QUERIES' in feature_types:
+                                st.markdown('**QUERIES**')
+                                d = t2.TDocumentSchema().load(response)
+                                page = d.pages[0]
+                                query_answers = d.get_query_answers(page=page)
+                                queries_df = pd.DataFrame(
+                                    query_answers,
+                                    columns=['Text','Alias','Value'])
+                                st.dataframe(queries_df)
+                            if 'FORMS' in feature_types:
+                                st.markdown('**FORMS**')
+                                forms = get_string(
+                                    textract_json=response,
+                                    table_format=Pretty_Print_Table_Format.csv,
+                                    output_type=[Textract_Pretty_Print.FORMS],
+                                )
+                                forms_df = pd.read_csv(io.StringIO(forms),sep=",")
+                                st.dataframe(forms_df)
+                            if 'TABLES' in feature_types:
+                                st.markdown('**TABLES**')
+                                tables = get_string(
+                                    textract_json=response,
+                                    table_format=Pretty_Print_Table_Format.csv,
+                                    output_type=[Textract_Pretty_Print.TABLES],
+                                )
+                                tables_df = pd.read_csv(io.StringIO(tables),sep=",")
+                                st.dataframe(tables_df)
+                                
+                    if options == 'AnalyzeExpense':
+                        with st.expander('View response from AnalyzeExpense'):
+                            pass
+                        
+                    if options == 'AnalyzeID':
+                        with st.expander('View response from AnalyzeID'):
+                            pass
+                        
+                st.session_state.response = response
+            elif not st.session_state.response:
+                st.warning('No response generated')                   
         else:
             st.warning('AWS credentials are not loaded.')
     else:
         st.warning('There is no image loaded.')
-        
-    # image post-processing
+    
+    # expand with Amazon Comprehend and Hugging Face
     #######################
-    st.header('Image post-processing')
-    st.subheader("Select custom tags from key-value pairs (optional)")
-    
-    ## check if there's existing annotation
-    selected_anno = return_anno_file('test_images', image_fname)
-    if selected_anno:
-        with st.expander(f'We found an existing annotation here'):
-            st.write(f'`{selected_anno}`')
-            if st.button(f'Load custom tags from the existing file'):
-                pass
+    st.header('(3) Amazon Comprehend')
+    st.header('(4) Hugging Face Transformers')
+    st.subheader("Summary")
+    if input_image:
+        if st.session_state.response:
+            options = st.selectbox(
+                'Please select any of the following to review the Textract response',
+                ['Not selected','google/pegasus-xsum','facebook/bart-large-cnn'],
+                help='https://huggingface.co/models?pipeline_tag=summarization&sort=downloads',
+            )
+            st.write(f'You selected: `{options}`')
             
-    save_json_to_disk = st.checkbox('Save all changes to disk')
-    number_tags = st.number_input('Select the number of tags to use', min_value=0, value=0)
-    tags = []
-    
-    if number_tags == 0:
-        st.warning('No tags selected.')
-    else:
-        with st.form("kv_pairs"):    
-            container = st.container()
-            for i in range(int(number_tags)):
-                    cA, cB, cC = st.columns(3)
-                    with container:
-                        textA = cA.text_input(f'ID_{i}_START_STR','Sample text',key=f'{i}_start_str')
-                        textB = cB.text_input(f'ID_{i}_END_STR',key=f'{i}_end_str')
-                        textC = cC.text_input(f'ID_{i}_PREFIX',f'PREFIX_{i}',key=f'{i}_prefix')
-                        tags.append(
-                            {
-                                f'ID_{i}_START_STR': textA,
-                                f'ID_{i}_END_STR': textB,
-                                f'ID_{i}_PREFIX': textC,
-                            }
-                        )
-            # Every form must have a submit button.
-            submitted = st.form_submit_button("Save")
-
-        if submitted:
-            st.success('Saved changes.')
-            if save_json_to_disk:
-                with open(f'test_images/{Path(image_fname).stem}.json', 'w') as f:
-                    json.dump(tags, f)
-            with st.expander("See list of selected tags"):
-                st.write(tags)
+            if options != 'Not selected':
+                with st.spinner('Downloading model weights and loading...'):
+                    pipe = pipeline("summarization", model=options)
+                summary = pipe(parse_response(st.session_state.response), 
+                               max_length=130, min_length=30, do_sample=False)
+                
+                with st.expander('View response'):
+                    st.write(summary)
         else:
-            st.warning('No tags selected.')
+            st.warning('No response generated')
+    else:
+        st.warning('There is no image loaded.')
     
     # footer
     st.header('References')
-    st.markdown('''
-    - [Extract Information By Using Document Geometry + Amazon Textract](https://github.com/machinelearnear/extract-info-by-doc-geometry-aws-textract)
-    - [Access AWS resources from Studiolab](https://github.com/aws/studio-lab-examples/blob/main/connect-to-aws/Access_AWS_from_Studio_Lab.ipynb)
-    - [Textractor GeoFinder Sample Notebook](https://github.com/aws-samples/amazon-textract-textractor/blob/master/tpipelinegeofinder/geofinder-sample-notebook.ipynb)
-    - [Intelligent Document Processing Workshop](https://catalog.us-east-1.prod.workshops.aws/workshops/c2af04b2-54ab-4b3d-be73-c7dd39074b20/en-US/)
-    ''')
     st.code(
         '''
     @INPROCEEDINGS{9506664,  
@@ -508,6 +623,12 @@ def main():
     }
         '''
         , language='bibtex')
+    
+    st.header('Disclaimer')
+    st.markdown('''
+    - The content provided in this repository is for demonstration purposes and not meant for production. You should use your own discretion when using the content.
+    - The ideas and opinions outlined in these examples are my own and do not represent the opinions of AWS.
+    ''')
 
 # run application
 # -----------------------------------------------------------
