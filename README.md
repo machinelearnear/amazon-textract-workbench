@@ -145,6 +145,7 @@ with st.expander('View response'):
 ```
 
 ## Next steps: How to do large scale document processing with Amazon Textract
+
 - [Using SNS and SQS to handle concurrency at large scale](https://github.com/aws-samples/amazon-textract-serverless-large-scale-document-processing)
 - [Using CDK and Step Functions](https://github.com/aws-samples/amazon-textract-transformer-pipeline)
 - [Reference architecture: "Document Understanding Solution"](https://aws.amazon.com/solutions/implementations/document-understanding-solution/)
@@ -159,6 +160,7 @@ with st.expander('View response'):
 ![Document Understanding Solution Architecture](document-understanding-solution.png)
 
 ## Additional resources
+
 - [Amazon Textract code samples](https://github.com/aws-samples/amazon-textract-code-samples)
 - [How to extract information by using document geometry & Amazon Textract](https://github.com/machinelearnear/extract-info-by-doc-geometry-aws-textract)
 - [Textractor GeoFinder Sample Notebook](https://github.com/aws-samples/amazon-textract-textractor/blob/master/tpipelinegeofinder/geofinder-sample-notebook.ipynb)
@@ -166,6 +168,8 @@ with st.expander('View response'):
 - [Paragraph identification](https://github.com/aws-samples/textract-paragraph-identification)
 - [Specify and extract information from documents using the new Queries feature in Amazon Textract](https://aws.amazon.com/blogs/machine-learning/specify-and-extract-information-from-documents-using-the-new-queries-feature-in-amazon-textract/)
 - [Sample notebook showing use of new "Queries" feature](https://github.com/aws-samples/amazon-textract-code-samples/blob/master/python/queries/paystub.ipynb)
+- [Accelerating Topic modeling with RAPIDS and BERT models](https://medium.com/rapids-ai/accelerating-topic-modeling-with-rapids-and-bert-models-be9909eeed2)
+- [BERTopic](https://github.com/MaartenGr/BERTopic)
 - [Annotated Text Component for Streamlit](https://github.com/tvst/st-annotated-text)
 
 ## References
