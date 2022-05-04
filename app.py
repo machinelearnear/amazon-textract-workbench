@@ -48,7 +48,7 @@ from testUtils import prepare_inference, find_best_model
 from layerUtils import *
 from metrics import *
 
-@st.cache
+@st.experimental_singleton
 def sauvolanet_load_model(model_root = f'{path_repo_sauvolanet}/pretrained_models/'):
     for this in os.listdir(model_root) :
         if this.endswith('.h5') :
@@ -84,7 +84,7 @@ from utils import utils_image as util
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 n_channels = 3
 
-@st.cache
+@st.experimental_singleton
 def scunet_load_model(model_path=f'{path_repo_SCUNet}/model_zoo/scunet_color_real_psnr.pth'):
     from models.network_scunet import SCUNet as net
     model = net(in_nc=n_channels,config=[4,4,4,4,4,4,4],dim=64)
@@ -583,19 +583,22 @@ def main():
         if st.session_state.response:
             options = st.selectbox(
                 'Please select any of the following to review the Textract response',
-                ['Not selected','google/pegasus-xsum','facebook/bart-large-cnn'],
+                ['Not selected','google/pegasus-xsum','facebook/bart-large-cnn', 'Use another'],
                 help='https://huggingface.co/models?pipeline_tag=summarization&sort=downloads',
             )
-            st.write(f'You selected: `{options}`')
             
-            if options != 'Not selected':
+            if options == 'Use another':
+                options = st.text_input('Enter model name here, e.g. "sshleifer/distilbart-cnn-12-6"')
+            
+            if not options == 'Not selected' and len(options)>0: 
                 with st.spinner('Downloading model weights and loading...'):
                     pipe = load_model_pipeline(task="summarization", model_name=options)
                 summary = pipe(parse_response(st.session_state.response), 
                                max_length=130, min_length=30, do_sample=False)
-                
                 with st.expander('View response'):
                     st.write(summary)
+                    
+            st.write(f'You selected: `{options}`')
         else:
             st.warning('No response generated')
     else:
