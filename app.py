@@ -261,8 +261,8 @@ def parse_response(response):
                 text = text + word.text + ' '
     return text.strip()
 
-@st.experimental_memo
-def hf_pipeline(model_name, task):
+@st.experimental_singleton
+def load_model_pipeline(task, model_name):
     return pipeline(task, model=model_name)
 
 # streamlit app
@@ -590,7 +590,7 @@ def main():
             
             if options != 'Not selected':
                 with st.spinner('Downloading model weights and loading...'):
-                    pipe = pipeline("summarization", model=options)
+                    pipe = load_model_pipeline(task="summarization", model_name=options)
                 summary = pipe(parse_response(st.session_state.response), 
                                max_length=130, min_length=30, do_sample=False)
                 
@@ -600,6 +600,28 @@ def main():
             st.warning('No response generated')
     else:
         st.warning('There is no image loaded.')
+    st.header('(5) SpaCy')
+    if input_image:
+        if st.session_state.response:
+            options = st.selectbox(
+                'Select visualisers:',
+                ["Not selected","NER"],
+                help='https://github.com/explosion/spacy-streamlit',
+            )
+            
+            if options != 'Not selected':
+                with st.spinner('Loading SpaCy model...'):
+                    import spacy
+                    import spacy_streamlit
+                    
+                    try: nlp = spacy.load("en_core_web_sm")
+                    except: os.system('python -m spacy download en_core_web_sm')
+                    nlp = spacy.load("en_core_web_sm")
+                doc = nlp(parse_response(st.session_state.response))
+                spacy_streamlit.visualize_ner(
+                    doc, labels=nlp.get_pipe("ner").labels)
+        else:
+            st.warning('No response generated')
     
     # footer
     st.header('References')

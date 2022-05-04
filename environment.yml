@@ -34,3 +34,5 @@ dependencies:
     - timm
     - tabulate
     - pdf2image
+    - spacy
+    - spacy_streamlit
