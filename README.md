@@ -83,6 +83,7 @@ with st.expander("See modified image"):
 ```
 
 Here's a demo:
+
 https://user-images.githubusercontent.com/78419164/166663497-79cdda76-93b3-43b8-b9c4-ed00f438cd25.mov
 
 ### Make API request to Textract with `Queries`
