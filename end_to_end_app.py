@@ -94,8 +94,7 @@ def scunet_load_model(model_path=f'{path_repo_SCUNet}/model_zoo/scunet_color_rea
         v.requires_grad = False
         
     return model.to(device)
- 
-@st.experimental_singleton
+    
 def scunet_inference(model,img):
     # ------------------------------------
     # (1) img_L
@@ -287,7 +286,7 @@ st.set_page_config(
 def main():
     # intro and sidebar
     #######################
-    st.title('Amazon Textract Workbench v0.1')
+    st.title('Amazon Textract Pipeline v0.1')
     st.markdown('''
     This repo is aimed at giving you a place to experiment with the tooling and 
     will show you a step by step tutorial on how to take advantage of the geometric 
@@ -327,45 +326,22 @@ def main():
 
     # (1) read input image
     #######################
-    st.header('(1) Read input image')
-    options = st.selectbox('Please choose any of the following options',
-        (
-            'Choose sample image from library',
-            'Download image from URL',
-            'Upload your own image / file',
-        )
-    )
-
-    input_image = None
-    if options == 'Choose sample image from library':
-        image_files = return_fnames('test_images')
-        selected_file = st.selectbox(
-            'Select an image file or PDF from the list', image_files
-        )
-        image_fname = selected_file
-        st.write(f'You have selected `{image_fname}`')
+    st.header('(0) Configure environment')
+    with st.form('config'):
+        preprocessing = st.selectbox()
+        textract_api = None
         
-        if Path(image_fname).suffix != '.pdf':
-            input_image = Image.open(selected_file)
+    
+    
+    st.header('(1) Load input document(s)')
+    uploaded_file= st.file_uploader(
+        "Choose document(s) to upload", key='uploaded_file', accept_multiple_files=True)
+    if uploaded_file:
+        if Path(uploaded_file.name).suffix != '.pdf':
+            input_image = Image.open(io.BytesIO(uploaded_file.decode()))
         else:
-            input_image = convert_from_path(selected_file,fmt='png')[0] # only first page
-            
-    elif options == 'Download image from URL':
-        image_url = st.text_input('Image URL')
-        try:
-            r = requests.get(image_url)
-            image_fname = get_filename_from_cd(r.headers.get('content-disposition'))
-            input_image = Image.open(io.BytesIO(r.content))
-        except Exception:
-            st.error('There was an error downloading the image. Please check the URL again.')
-    elif options == 'Upload your own image / file':
-        uploaded_file = st.file_uploader("Choose file to upload", key='uploaded_file_input_image')
-        if uploaded_file:
-            if Path(uploaded_file.name).suffix != '.pdf':
-                input_image = Image.open(io.BytesIO(uploaded_file.decode()))
-            else:
-                input_image = convert_from_bytes(uploaded_file.read(),fmt='png')[0] # only first page
-            st.success('Image was successfully uploaded')
+            input_image = convert_from_bytes(uploaded_file.read(),fmt='png')[0] # only first page
+        st.success('Image was successfully uploaded')
 
     if input_image:
         max_im_size = (1000,1000)
@@ -669,7 +645,7 @@ def main():
                     pipe = load_model_pipeline(task="zero-shot-classification", model_name=options)
                 candidate_labels = st.text_input(
                     'Possible class names (comma-separated)',
-                    value='utility bill, benefit claim, medical form',
+                    value='utility bill, benefit application, medical note',
                 )
                 if candidate_labels: candidate_labels = [x.strip() for x in candidate_labels.split(',')]
                 zero_shot_class = pipe(parse_response(st.session_state.response), candidate_labels)

@@ -144,11 +144,21 @@ with st.expander('View response'):
     st.write(summary)
 ```
 
+### (Additional) Extract Information Using "Geometric Context" and Amazon Textract
+
+Quote from [this repository](https://github.com/aws-samples/amazon-textract-textractor/tree/master/tpipelinegeofinder) by Martin Schade.
+
+> To find information in a document based on geometry with this library the main advantage over defining x,y coordinates where the expected value should be is the concept of an area. An area is ultimately defined by a box with `x_min`, `y_min`, `x_max`, `y_max` coordinates but can be defined by finding words/phrases in the document and then use to create the area. From there, functions to parse the information in the area help to extract the information. E. g. by defining the area based on the question like 'Did you feel fever or feverish lately?' we can associate the answers to it and create a new key/value pair specific to this question.
+
+You can find a notebook sample with a step by step tutorial under `notebook_samples/extract-info-geometric-context.ipynb`.
+
 ## Next steps: How to do large scale document processing with Amazon Textract
 
 - [Using SNS and SQS to handle concurrency at large scale](https://github.com/aws-samples/amazon-textract-serverless-large-scale-document-processing)
 - [Using CDK and Step Functions](https://github.com/aws-samples/amazon-textract-transformer-pipeline)
 - [Reference architecture: "Document Understanding Solution"](https://aws.amazon.com/solutions/implementations/document-understanding-solution/)
+- [Serverless Inferece by Amazon](https://docs.aws.amazon.com/sagemaker/latest/dg/serverless-endpoints.html)
+- [Serverless Inference with Hugging Face's Transformers, DistilBERT and Amazon SageMaker](https://www.philschmid.de/sagemaker-serverless-huggingface-distilbert)
 
 > The Document Understanding Solution (DUS) delivers an easy-to-use web application that ingests and analyzes files, extracts text from documents, identifies structural data (tables, key value pairs), extracts critical information (entities), and creates smart search indexes from the data. Additionally, files can be uploaded directly to and analyzed files can be accessed from an Amazon Simple Storage Service (Amazon S3) bucket in your AWS account.
 
@@ -158,6 +168,10 @@ with st.expander('View response'):
 > - Workflow automation: Easily plugs into your existing upstream and downstream applications
 
 ![Document Understanding Solution Architecture](document-understanding-solution.png)
+
+Additionally, serverless endpoints are a great way to create microservices that can be easily used within your document processing pipelines. From [this blog post](https://www.philschmid.de/sagemaker-serverless-huggingface-distilbert) by Philipp Schmid.
+
+> Amazon SageMaker Serverless Inference is a new capability in SageMaker that enables you to deploy and scale ML models in a Serverless fashion. Serverless endpoints automatically launch compute resources and scale them in and out depending on traffic similar to AWS Lambda. Serverless Inference is ideal for workloads which have idle periods between traffic spurts and can tolerate cold starts. With a pay-per-use model, Serverless Inference is a cost-effective option if you have an infrequent or unpredictable traffic pattern.
 
 ## Additional resources
 
